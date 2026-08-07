@@ -56,7 +56,7 @@ dbutils.widgets.text("chunk_embeddings_table_name", "ticker_news_chunk_embedding
 dbutils.widgets.text("embedding_model", "sentence-transformers/all-MiniLM-L6-v2", "Embedding model")
 dbutils.widgets.text("massive_secret_scope", "massive", "Massive API secret scope")
 dbutils.widgets.text("massive_secret_key", "api-key", "Massive API secret key")
-dbutils.widgets.text("massive_api_base_url", "https://api.massive.com", "Massive API base URL")
+dbutils.widgets.text("massive_api_base_url", "https://api.polygon.io", "Massive API base URL")
 dbutils.widgets.text("news_fetch_limit", "50", "Max articles to fetch per ticker")
 dbutils.widgets.text("max_requests_per_minute", "5", "Massive API rate limit (free tier is strict)")
 dbutils.widgets.text("chunk_size", "800", "Article content chunk size (chars)")
@@ -651,7 +651,21 @@ chunks_df = pd.DataFrame({
 })
 
 print(f"Extracted {len(chunks_df)} content chunks from {len(content_df)} article URLs")
-display(chunks_df.head(5))
+
+if len(chunks_df) == 0:
+    print("\n⚠️ WARNING: All article URLs failed to fetch!")
+    print("This is expected on Databricks Serverless due to DNS resolution limitations.")
+    print("Serverless compute cannot resolve external domain names for article URLs.")
+    print("\nChunk embeddings require fetching article bodies from external publishers,")
+    print("which is not possible in the Serverless environment.")
+    print("\nTitle + description embeddings (already computed above) are sufficient for:")
+    print("  ✅ News semantic search and discovery")
+    print("  ✅ Ticker-based filtering and recommendations")
+    print("  ✅ RAG context retrieval")
+    print("  ✅ Trend analysis and topic clustering")
+    print("\nTo enable chunk embeddings, switch to a standard (non-Serverless) cluster.")
+else:
+    display(chunks_df.head(5))
 
 # COMMAND ----------
 
