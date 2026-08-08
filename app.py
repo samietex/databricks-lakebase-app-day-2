@@ -435,106 +435,171 @@ def _upsert_news_batch(ticker: str, articles: list[dict]) -> int:
     return count
 
 
+def _format_vector(embedding: list) -> str:
+    """Format an embedding as a pgvector literal: '[v1,v2,...]'."""
+    return "[" + ",".join(str(x) for x in embedding) + "]"
+
+
+def _search_chunks(embedding_str: str, limit: int) -> tuple[list[dict], int]:
+    """Passage-level search against the chunk embeddings table (the primary
+    path). Returns (articles, total_chunks) grouped by article. Comes back
+    empty when the chunk table has no rows yet (e.g. chunk ingestion couldn't
+    run on Databricks Serverless - see docs/chunk_embeddings_local_ingestion.md)."""
+    sql = f"""
+        SELECT
+            id, article_id, ticker, chunk_index, chunk_text, model_name, embedded_at,
+            1 - (embedding <=> %s::vector) AS similarity_score
+        FROM {CHUNK_EMBEDDINGS_TABLE_NAME}
+        ORDER BY embedding <=> %s::vector
+        LIMIT %s
+    """
+    rows = lakebase.run_query(sql, (embedding_str, embedding_str, limit))
+    articles: dict[str, dict] = {}
+    for row in rows:
+        article_id = row["article_id"]
+        if article_id not in articles:
+            articles[article_id] = {
+                "article_id": article_id,
+                "ticker": row["ticker"],
+                "chunks": [],
+            }
+        articles[article_id]["chunks"].append({
+            "chunk_id": row["id"],
+            "chunk_index": row["chunk_index"],
+            "text": row["chunk_text"],
+            "similarity_score": float(row["similarity_score"]),
+            "embedded_at": row["embedded_at"].isoformat() if row["embedded_at"] else None,
+        })
+    return list(articles.values()), len(rows)
+
+
+def _search_articles(embedding_str: str, limit: int) -> tuple[list[dict], int]:
+    """Fallback: article-level (title/description) search against the
+    ticker_news_embeddings table, used when the chunk table is empty/thin so the
+    demo still returns something. Each article is presented with a single
+    synthetic 'chunk' (text filled from the article's description during the
+    metadata join) so the response shape matches _search_chunks exactly and the
+    frontend renders with no changes."""
+    sql = f"""
+        SELECT
+            id, ticker, title, embedded_at,
+            1 - (embedding <=> %s::vector) AS similarity_score
+        FROM {EMBEDDINGS_TABLE_NAME}
+        ORDER BY embedding <=> %s::vector
+        LIMIT %s
+    """
+    rows = lakebase.run_query(sql, (embedding_str, embedding_str, limit))
+    articles = [
+        {
+            "article_id": row["id"],
+            "ticker": row["ticker"],
+            "chunks": [{
+                "chunk_id": row["id"],
+                "chunk_index": 0,
+                "text": "",  # filled from description/title in _attach_article_metadata
+                "similarity_score": float(row["similarity_score"]),
+                "embedded_at": row["embedded_at"].isoformat() if row["embedded_at"] else None,
+            }],
+        }
+        for row in rows
+    ]
+    return articles, len(rows)
+
+
+def _attach_article_metadata(articles: list[dict]) -> None:
+    """Join title/description/url/publisher/sentiment from the raw documents
+    table onto each result in place, and guarantee every chunk has non-empty
+    text (falls back to the article description, then the title)."""
+    if not articles:
+        return
+    ids = [a["article_id"] for a in articles]
+    placeholders = ",".join(["%s"] * len(ids))
+    rows = lakebase.run_query(
+        f"""
+        SELECT id, ticker, title, description, article_url,
+               publisher_name, published_utc, sentiment
+        FROM {NEWS_TABLE_NAME}
+        WHERE id IN ({placeholders})
+        """,
+        tuple(ids),
+    )
+    meta = {r["id"]: r for r in rows}
+    for article in articles:
+        m = meta.get(article["article_id"])
+        if not m:
+            continue
+        article.update({
+            "title": m["title"],
+            "description": m["description"],
+            "article_url": m["article_url"],
+            "publisher_name": m["publisher_name"],
+            "published_utc": m["published_utc"].isoformat() if m["published_utc"] else None,
+            "sentiment": m["sentiment"],
+        })
+        # Article-level fallback chunks come in with empty text; show the
+        # description (or title) so the excerpt card isn't blank.
+        for chunk in article.get("chunks", []):
+            if not chunk.get("text"):
+                chunk["text"] = m["description"] or m["title"] or ""
+
+
 @app.route("/api/search", methods=["POST"])
 def vector_search():
     """
     Semantic search endpoint using vector embeddings.
-    
-    Takes a natural language prompt, embeds it using the same model used for
-    the news chunks, and returns the most similar document chunks from the
-    ticker_news_chunk_embeddings table using cosine similarity.
-    
+
+    Takes a natural language prompt, embeds it with the same model used for the
+    news chunks, and returns the most similar passages using cosine similarity.
+
+    Primary path searches the passage-level chunk table
+    (ticker_news_chunk_embeddings). If that table is empty/unavailable - e.g.
+    chunk ingestion hasn't been run off-platform yet - it FALLS BACK to the
+    article-level title/description table (ticker_news_embeddings) so the demo
+    still returns results. The `search_source` field in the response tells you
+    which path answered ("chunks" or "articles").
+
     Body (JSON): {"query": "What is the latest news on tech stocks?", "limit": 10}
-    Returns: List of matching chunks with their metadata and similarity scores.
     """
     if not request.is_json:
         return jsonify({"error": "Request must be JSON"}), 400
-    
+
     query = request.json.get("query", "").strip()
     if not query:
         return jsonify({"error": "Query text is required"}), 400
-    
+
     limit = int(request.json.get("limit", 10))
     limit = min(max(1, limit), 50)  # Clamp between 1 and 50
-    
+
     try:
-        # Generate embedding for the query
         model = get_embedding_model()
-        query_embedding = model.encode(query).tolist()
-        
-        # Convert embedding list to PostgreSQL array format
-        embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
-        
-        # Query the chunk embeddings table using cosine similarity
-        # pgvector's <=> operator returns cosine distance (lower is better)
-        # We convert to similarity score (1 - distance) for easier interpretation
-        sql = f"""
-            SELECT 
-                id,
-                article_id,
-                ticker,
-                chunk_index,
-                chunk_text,
-                model_name,
-                embedded_at,
-                1 - (embedding <=> %s::vector) AS similarity_score
-            FROM {CHUNK_EMBEDDINGS_TABLE_NAME}
-            ORDER BY embedding <=> %s::vector
-            LIMIT %s
-        """
-        
-        results = lakebase.run_query(sql, (embedding_str, embedding_str, limit))
-        
-        # Group results by article_id to show document-level context
-        articles = {}
-        for row in results:
-            article_id = row["article_id"]
-            if article_id not in articles:
-                articles[article_id] = {
-                    "article_id": article_id,
-                    "ticker": row["ticker"],
-                    "chunks": [],
-                }
-            articles[article_id]["chunks"].append({
-                "chunk_id": row["id"],
-                "chunk_index": row["chunk_index"],
-                "text": row["chunk_text"],
-                "similarity_score": float(row["similarity_score"]),
-                "embedded_at": row["embedded_at"].isoformat() if row["embedded_at"] else None,
-            })
-        
-        # Fetch article metadata for the matched chunks
-        if articles:
-            article_ids = list(articles.keys())
-            placeholders = ",".join(["%s"] * len(article_ids))
-            article_sql = f"""
-                SELECT id, ticker, title, description, article_url, 
-                       publisher_name, published_utc, sentiment
-                FROM {NEWS_TABLE_NAME}
-                WHERE id IN ({placeholders})
-            """
-            article_rows = lakebase.run_query(article_sql, tuple(article_ids))
-            
-            for article_row in article_rows:
-                article_id = article_row["id"]
-                if article_id in articles:
-                    articles[article_id].update({
-                        "title": article_row["title"],
-                        "description": article_row["description"],
-                        "article_url": article_row["article_url"],
-                        "publisher_name": article_row["publisher_name"],
-                        "published_utc": article_row["published_utc"].isoformat() 
-                            if article_row["published_utc"] else None,
-                        "sentiment": article_row["sentiment"],
-                    })
-        
+        embedding_str = _format_vector(model.encode(query).tolist())
+
+        # Primary: passage-level chunk search. Guard against the chunk table not
+        # existing yet so a missing/empty table degrades to the fallback instead
+        # of 500-ing.
+        search_source = "chunks"
+        try:
+            articles, total_chunks = _search_chunks(embedding_str, limit)
+        except Exception:  # noqa: BLE001 - table may not exist; degrade gracefully
+            logger.warning("Chunk search failed; falling back to article-level search.")
+            articles, total_chunks = [], 0
+
+        # Fallback: article-level title/description search when there are no
+        # chunk results (empty chunk table is the common Free-edition case).
+        if not articles:
+            search_source = "articles"
+            articles, total_chunks = _search_articles(embedding_str, limit)
+
+        _attach_article_metadata(articles)
+
         return jsonify({
             "query": query,
-            "results": list(articles.values()),
-            "total_chunks": len(results),
+            "results": articles,
+            "total_chunks": total_chunks,
             "total_articles": len(articles),
+            "search_source": search_source,
         })
-    
+
     except Exception as e:
         logger.exception("Error performing vector search")
         return jsonify({"error": str(e)}), 500

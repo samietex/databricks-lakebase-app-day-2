@@ -403,12 +403,21 @@
                 return;
             }
 
+            const summary = data.search_source === 'articles'
+                ? `Found ${data.total_articles} relevant articles (title/description match)`
+                : `Found ${data.total_chunks} relevant chunks across ${data.total_articles} articles`;
+            const fallbackNote = data.search_source === 'articles'
+                ? `<div class="results-summary" style="margin-top:0.4rem;color:#856404;">
+                       ℹ️ Showing article-level matches — passage-level chunk search is
+                       unavailable (the chunk embeddings table is empty). See the ingestion docs.
+                   </div>`
+                : '';
+
             let html = `
                 <div class="results-header">
                     <h2>Search Results</h2>
-                    <div class="results-summary">
-                        Found ${data.total_chunks} relevant chunks across ${data.total_articles} articles
-                    </div>
+                    <div class="results-summary">${summary}</div>
+                    ${fallbackNote}
                 </div>
             `;
 
