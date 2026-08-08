@@ -1,0 +1,18 @@
+# Dependencies for the LOCAL chunk-embeddings ingestion script
+# (scripts/ingest_chunk_embeddings.py).
+#
+# Kept separate from the app's requirements.txt on purpose: trafilatura and its
+# HTML-parsing stack are only needed to fetch + clean article bodies during
+# ingestion. The deployed Databricks App never fetches article bodies (it only
+# embeds the search query and reads vectors from Postgres), so it should NOT
+# carry these extra dependencies.
+#
+# Install from the app root:  pip install -r scripts/requirements-ingest.txt
+
+sentence-transformers>=2.2.0   # same model family the app uses to embed queries
+torch>=2.0.0                   # sentence-transformers backend
+trafilatura>=1.6.0             # extracts clean article text from raw HTML
+requests>=2.32.3               # fetch article URLs
+psycopg2-binary>=2.9.9         # write vectors into Lakebase (pgvector)
+python-dotenv>=1.0.1           # optional: load LAKEBASE_URL from a local .env
+databricks-sdk>=0.30.0         # optional: only used if resolving via secret scope

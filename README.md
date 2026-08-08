@@ -15,6 +15,9 @@ A minimal Databricks App that:
 - `app.yaml` - Databricks App deployment config (command + env vars)
 - `templates/index.html` - Watchlist UI (add + remove tickers)
 - `notebooks/ingest_ticker_news_embeddings.py` - Self-contained ETL notebook: reads tickers from the `watchlist` table, fetches news for those tickers directly from Massive (rate-limited to 5 requests/min for the free API tier) into `ticker_news_documents`, computes title/description embeddings into `ticker_news_embeddings`, and fetches + chunks + embeds each article's full body (via `trafilatura`) into `ticker_news_chunk_embeddings` (pgvector)
+- `scripts/ingest_chunk_embeddings.py` - **Local** chunk-embeddings ingestion: runs the fetch → chunk → embed → upsert pipeline from your own machine (or Colab/AWS) instead of Databricks, to work around the Free-edition Serverless egress limit that blocks fetching article bodies. Writes into `ticker_news_chunk_embeddings`. See [docs/chunk_embeddings_local_ingestion.md](docs/chunk_embeddings_local_ingestion.md).
+- `scripts/requirements-ingest.txt` - Dependencies for the local ingestion script (kept out of the app's `requirements.txt` on purpose)
+- `docs/chunk_embeddings_local_ingestion.md` - **Walkthrough** of the chunk-embeddings blocker, the diagnosis, why we compute vectors off-platform, and how to do it locally / on Colab / on AWS
 - `databricks.yml` + `resources/ingest_ticker_news_embeddings_job.yml` - Databricks Asset Bundle config that schedules the notebook above as a Workflow (see [Scheduling the embeddings notebook](#scheduling-the-embeddings-notebook-as-a-databricks-workflow))
 - `.env.example` - Local dev env var template (copy to `.env`, do not commit real values)
 
@@ -184,6 +187,33 @@ If you'd rather not use the CLI, you can create the equivalent job by hand in th
 Both options produce the same result — a Databricks Workflow that runs the notebook and refreshes
 `ticker_news_embeddings`. The Asset Bundle keeps the definition in git and reproducible across
 workspaces; the UI path is quicker for a one-off class demo but isn't tracked in version control.
+
+## Chunk embeddings on Databricks Free edition (the Serverless egress blocker)
+
+If you're on **Databricks Free edition** (Serverless-only), the notebook's **chunk-embeddings**
+step will fail with *"All article URLs failed to fetch"* and the
+`ticker_news_chunk_embeddings` table will stay empty. Since the app's semantic search
+(`POST /api/search`) reads **only** from that table, search will return nothing until it's populated.
+
+**Why:** building chunk embeddings requires fetching each article's full body from its publisher's
+website, and Free-edition Serverless blocks outbound traffic to arbitrary external domains (Free
+edition also can't create a classic cluster that would be allowed to). Note this is a **networking**
+limit, not a compute one — the embedding model itself runs fine on Serverless (the title/description
+embeddings succeed).
+
+**Fix:** compute the chunk vectors **off-platform** and write them straight into Lakebase (which is
+publicly reachable). Your laptop works for free:
+
+```bash
+pip install -r scripts/requirements-ingest.txt
+python scripts/ingest_chunk_embeddings.py --create-table
+```
+
+The app stays deployed on Databricks the whole time — its query-time search embeds only the query
+string and never fetches the open web, so it's unaffected by the Serverless egress limit.
+
+**Full write-up** (the blocker, the diagnosis, the two-phase architecture, and Local vs Colab vs AWS
+alternatives) is in **[docs/chunk_embeddings_local_ingestion.md](docs/chunk_embeddings_local_ingestion.md)**.
 
 ## Enabling Change Data Feed (CDF) for Postgres tables
 
