@@ -741,7 +741,8 @@ import psycopg2
 from datetime import datetime
 
 # Add id (article_id_chunk_index), model_name, and embedded_at columns
-chunk_embeddings_df['id'] = chunk_embeddings_df['article_id'] + '_' + chunk_embeddings_df['chunk_index']
+# Convert both article_id and chunk_index to string first for concatenation
+chunk_embeddings_df['id'] = chunk_embeddings_df['article_id'].astype(str) + '_' + chunk_embeddings_df['chunk_index'].astype(str)
 chunk_embeddings_df['model_name'] = EMBEDDING_MODEL_NAME
 chunk_embeddings_df['embedded_at'] = datetime.now()
 chunk_embeddings_df['chunk_index'] = chunk_embeddings_df['chunk_index'].astype(int)

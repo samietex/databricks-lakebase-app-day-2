@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>News Document Search</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 2rem;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            color: white;
+            text-align: center;
+            margin-bottom: 2rem;
+            font-size: 2.5rem;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        .search-box {
+            background: white;
+            border-radius: 12px;
+            padding: 2rem;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            margin-bottom: 2rem;
+        }
+
+        .search-input-group {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        #searchInput {
+            flex: 1;
+            padding: 1rem;
+            font-size: 1rem;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            transition: border-color 0.3s;
+        }
+
+        #searchInput:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        #searchButton {
+            padding: 1rem 2rem;
+            font-size: 1rem;
+            font-weight: 600;
+            color: white;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        #searchButton:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        #searchButton:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .options {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        .options label {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .options input[type="number"] {
+            width: 70px;
+            padding: 0.5rem;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+        }
+
+        #loading {
+            display: none;
+            text-align: center;
+            padding: 2rem;
+            color: white;
+            font-size: 1.2rem;
+        }
+
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid white;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        #error {
+            display: none;
+            background: #fee;
+            color: #c33;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            border-left: 4px solid #c33;
+        }
+
+        #results {
+            display: none;
+        }
+
+        .results-header {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        .results-header h2 {
+            color: #333;
+            margin-bottom: 0.5rem;
+        }
+
+        .results-summary {
+            color: #666;
+            font-size: 0.95rem;
+        }
+
+        .article-card {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .article-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+        }
+
+        .article-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 1rem;
+            gap: 1rem;
+        }
+
+        .article-title {
+            flex: 1;
+        }
+
+        .article-title h3 {
+            color: #333;
+            margin-bottom: 0.5rem;
+            font-size: 1.3rem;
+        }
+
+        .article-title h3 a {
+            color: #667eea;
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        .article-title h3 a:hover {
+            color: #764ba2;
+            text-decoration: underline;
+        }
+
+        .article-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            color: #666;
+            font-size: 0.9rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .meta-item {
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+        }
+
+        .ticker-badge {
+            background: #667eea;
+            color: white;
+            padding: 0.3rem 0.8rem;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.85rem;
+        }
+
+        .sentiment-badge {
+            padding: 0.3rem 0.8rem;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.85rem;
+        }
+
+        .sentiment-positive {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .sentiment-negative {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .sentiment-neutral {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .article-description {
+            color: #555;
+            margin-bottom: 1rem;
+            line-height: 1.6;
+        }
+
+        .chunks-container {
+            margin-top: 1rem;
+        }
+
+        .chunks-header {
+            color: #666;
+            font-size: 0.9rem;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+        }
+
+        .chunk {
+            background: #f8f9fa;
+            border-left: 3px solid #667eea;
+            padding: 1rem;
+            margin-bottom: 0.5rem;
+            border-radius: 4px;
+        }
+
+        .chunk-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+            font-size: 0.85rem;
+            color: #666;
+        }
+
+        .similarity-score {
+            background: #667eea;
+            color: white;
+            padding: 0.2rem 0.6rem;
+            border-radius: 12px;
+            font-weight: 600;
+        }
+
+        .chunk-text {
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .no-results {
+            background: white;
+            padding: 3rem;
+            border-radius: 12px;
+            text-align: center;
+            color: #666;
+        }
+
+        .no-results svg {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 News Document Search</h1>
+        
+        <div class="search-box">
+            <div class="search-input-group">
+                <input 
+                    type="text" 
+                    id="searchInput" 
+                    placeholder="Ask anything about the news... (e.g., 'What are the latest developments in AI?')"
+                    autocomplete="off"
+                />
+                <button id="searchButton">Search</button>
+            </div>
+            <div class="options">
+                <label>
+                    Results per page:
+                    <input type="number" id="limitInput" value="10" min="1" max="50" />
+                </label>
+            </div>
+        </div>
+
+        <div id="error"></div>
+
+        <div id="loading">
+            <div class="spinner"></div>
+            <p>Searching through documents...</p>
+        </div>
+
+        <div id="results"></div>
+    </div>
+
+    <script>
+        const searchInput = document.getElementById('searchInput');
+        const searchButton = document.getElementById('searchButton');
+        const limitInput = document.getElementById('limitInput');
+        const loading = document.getElementById('loading');
+        const error = document.getElementById('error');
+        const results = document.getElementById('results');
+
+        async function performSearch() {
+            const query = searchInput.value.trim();
+            if (!query) {
+                showError('Please enter a search query');
+                return;
+            }
+
+            const limit = parseInt(limitInput.value) || 10;
+
+            // Show loading, hide previous results
+            loading.style.display = 'block';
+            results.style.display = 'none';
+            error.style.display = 'none';
+            searchButton.disabled = true;
+
+            try {
+                const response = await fetch('/api/search', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query, limit }),
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Search failed');
+                }
+
+                const data = await response.json();
+                displayResults(data);
+            } catch (err) {
+                showError(err.message);
+            } finally {
+                loading.style.display = 'none';
+                searchButton.disabled = false;
+            }
+        }
+
+        function displayResults(data) {
+            if (!data.results || data.results.length === 0) {
+                results.innerHTML = `
+                    <div class="no-results">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <h3>No results found</h3>
+                        <p>Try a different search query</p>
+                    </div>
+                `;
+                results.style.display = 'block';
+                return;
+            }
+
+            let html = `
+                <div class="results-header">
+                    <h2>Search Results</h2>
+                    <div class="results-summary">
+                        Found ${data.total_chunks} relevant chunks across ${data.total_articles} articles
+                    </div>
+                </div>
+            `;
+
+            for (const article of data.results) {
+                const title = article.title || 'Untitled';
+                const description = article.description || '';
+                const ticker = article.ticker || 'N/A';
+                const publisher = article.publisher_name || 'Unknown';
+                const publishedDate = article.published_utc 
+                    ? new Date(article.published_utc).toLocaleDateString('en-US', {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric'
+                    })
+                    : 'Unknown date';
+                const sentiment = article.sentiment || null;
+                const articleUrl = article.article_url;
+
+                let sentimentBadge = '';
+                if (sentiment) {
+                    const sentimentClass = sentiment.toLowerCase() === 'positive' 
+                        ? 'sentiment-positive' 
+                        : sentiment.toLowerCase() === 'negative' 
+                        ? 'sentiment-negative' 
+                        : 'sentiment-neutral';
+                    sentimentBadge = `<span class="sentiment-badge ${sentimentClass}">${sentiment}</span>`;
+                }
+
+                html += `
+                    <div class="article-card">
+                        <div class="article-header">
+                            <div class="article-title">
+                                <h3>
+                                    ${articleUrl ? `<a href="${articleUrl}" target="_blank">${title}</a>` : title}
+                                </h3>
+                                <div class="article-meta">
+                                    <span class="ticker-badge">${ticker}</span>
+                                    ${sentimentBadge}
+                                    <span class="meta-item">📰 ${publisher}</span>
+                                    <span class="meta-item">📅 ${publishedDate}</span>
+                                </div>
+                            </div>
+                        </div>
+                `;
+
+                if (description) {
+                    html += `<div class="article-description">${description}</div>`;
+                }
+
+                if (article.chunks && article.chunks.length > 0) {
+                    html += `
+                        <div class="chunks-container">
+                            <div class="chunks-header">📄 Relevant excerpts (${article.chunks.length}):</div>
+                    `;
+                    
+                    for (const chunk of article.chunks) {
+                        const score = (chunk.similarity_score * 100).toFixed(1);
+                        html += `
+                            <div class="chunk">
+                                <div class="chunk-header">
+                                    <span>Chunk #${chunk.chunk_index + 1}</span>
+                                    <span class="similarity-score">${score}% match</span>
+                                </div>
+                                <div class="chunk-text">${chunk.text}</div>
+                            </div>
+                        `;
+                    }
+
+                    html += `</div>`;
+                }
+
+                html += `</div>`;
+            }
+
+            results.innerHTML = html;
+            results.style.display = 'block';
+        }
+
+        function showError(message) {
+            error.textContent = message;
+            error.style.display = 'block';
+            setTimeout(() => {
+                error.style.display = 'none';
+            }, 5000);
+        }
+
+        searchButton.addEventListener('click', performSearch);
+        searchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                performSearch();
+            }
+        });
+    </script>
+</body>
+</html>

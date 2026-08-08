@@ -139,6 +139,33 @@
     }
     .delete-btn:hover { background: var(--danger); color: #fff; }
     .delete-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    nav {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 32px;
+      padding: 8px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: 0 1px 3px rgba(16, 24, 40, 0.04);
+    }
+    nav a {
+      padding: 8px 16px;
+      border-radius: 6px;
+      text-decoration: none;
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 600;
+      transition: all 0.15s ease;
+    }
+    nav a:hover {
+      background: var(--bg);
+    }
+    nav a.active {
+      background: var(--accent);
+      color: #fff;
+    }
   </style>
 </head>
 <body>

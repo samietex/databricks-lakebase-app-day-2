@@ -16,6 +16,7 @@ import re
 import requests
 from databricks.sdk import WorkspaceClient
 from flask import Flask, jsonify, render_template, request
+from sentence_transformers import SentenceTransformer
 
 import lakebase
 from massive_client import MassiveClient
@@ -29,6 +30,28 @@ _w = WorkspaceClient()
 TABLE_NAME = os.environ.get("MASSIVE_TABLE_NAME", "massive_records")
 WATCHLIST_TABLE_NAME = os.environ.get("WATCHLIST_TABLE_NAME", "watchlist")
 NEWS_TABLE_NAME = os.environ.get("NEWS_TABLE_NAME", "ticker_news_documents")
+EMBEDDINGS_TABLE_NAME = os.environ.get(
+    "EMBEDDINGS_TABLE_NAME", "ticker_news_embeddings"
+)
+CHUNK_EMBEDDINGS_TABLE_NAME = os.environ.get(
+    "CHUNK_EMBEDDINGS_TABLE_NAME", "ticker_news_chunk_embeddings"
+)
+EMBEDDING_MODEL_NAME = os.environ.get(
+    "EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2"
+)
+
+# Initialize embedding model (lazy-loaded on first use)
+_embedding_model = None
+
+
+def get_embedding_model() -> SentenceTransformer:
+    """Lazy-load the sentence transformer model."""
+    global _embedding_model
+    if _embedding_model is None:
+        logger.info(f"Loading embedding model: {EMBEDDING_MODEL_NAME}")
+        _embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+        logger.info("Embedding model loaded successfully")
+    return _embedding_model
 
 # Tickers to fetch news for by default (comma-separated), e.g. "AAPL,MSFT,GOOGL"
 DEFAULT_NEWS_TICKERS = [
@@ -137,6 +160,12 @@ def handle_exception(err):
 def index():
     """Simple UI to submit a list of stock symbols to sync from Massive."""
     return render_template("index.html")
+
+
+@app.route("/search")
+def search_page():
+    """Vector search UI page."""
+    return render_template("search.html")
 
 
 @app.route("/records")
@@ -404,6 +433,111 @@ def _upsert_news_batch(ticker: str, articles: list[dict]) -> int:
                 count += 1
             conn.commit()
     return count
+
+
+@app.route("/api/search", methods=["POST"])
+def vector_search():
+    """
+    Semantic search endpoint using vector embeddings.
+    
+    Takes a natural language prompt, embeds it using the same model used for
+    the news chunks, and returns the most similar document chunks from the
+    ticker_news_chunk_embeddings table using cosine similarity.
+    
+    Body (JSON): {"query": "What is the latest news on tech stocks?", "limit": 10}
+    Returns: List of matching chunks with their metadata and similarity scores.
+    """
+    if not request.is_json:
+        return jsonify({"error": "Request must be JSON"}), 400
+    
+    query = request.json.get("query", "").strip()
+    if not query:
+        return jsonify({"error": "Query text is required"}), 400
+    
+    limit = int(request.json.get("limit", 10))
+    limit = min(max(1, limit), 50)  # Clamp between 1 and 50
+    
+    try:
+        # Generate embedding for the query
+        model = get_embedding_model()
+        query_embedding = model.encode(query).tolist()
+        
+        # Convert embedding list to PostgreSQL array format
+        embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
+        
+        # Query the chunk embeddings table using cosine similarity
+        # pgvector's <=> operator returns cosine distance (lower is better)
+        # We convert to similarity score (1 - distance) for easier interpretation
+        sql = f"""
+            SELECT 
+                id,
+                article_id,
+                ticker,
+                chunk_index,
+                chunk_text,
+                model_name,
+                embedded_at,
+                1 - (embedding <=> %s::vector) AS similarity_score
+            FROM {CHUNK_EMBEDDINGS_TABLE_NAME}
+            ORDER BY embedding <=> %s::vector
+            LIMIT %s
+        """
+        
+        results = lakebase.run_query(sql, (embedding_str, embedding_str, limit))
+        
+        # Group results by article_id to show document-level context
+        articles = {}
+        for row in results:
+            article_id = row["article_id"]
+            if article_id not in articles:
+                articles[article_id] = {
+                    "article_id": article_id,
+                    "ticker": row["ticker"],
+                    "chunks": [],
+                }
+            articles[article_id]["chunks"].append({
+                "chunk_id": row["id"],
+                "chunk_index": row["chunk_index"],
+                "text": row["chunk_text"],
+                "similarity_score": float(row["similarity_score"]),
+                "embedded_at": row["embedded_at"].isoformat() if row["embedded_at"] else None,
+            })
+        
+        # Fetch article metadata for the matched chunks
+        if articles:
+            article_ids = list(articles.keys())
+            placeholders = ",".join(["%s"] * len(article_ids))
+            article_sql = f"""
+                SELECT id, ticker, title, description, article_url, 
+                       publisher_name, published_utc, sentiment
+                FROM {NEWS_TABLE_NAME}
+                WHERE id IN ({placeholders})
+            """
+            article_rows = lakebase.run_query(article_sql, tuple(article_ids))
+            
+            for article_row in article_rows:
+                article_id = article_row["id"]
+                if article_id in articles:
+                    articles[article_id].update({
+                        "title": article_row["title"],
+                        "description": article_row["description"],
+                        "article_url": article_row["article_url"],
+                        "publisher_name": article_row["publisher_name"],
+                        "published_utc": article_row["published_utc"].isoformat() 
+                            if article_row["published_utc"] else None,
+                        "sentiment": article_row["sentiment"],
+                    })
+        
+        return jsonify({
+            "query": query,
+            "results": list(articles.values()),
+            "total_chunks": len(results),
+            "total_articles": len(articles),
+        })
+    
+    except Exception as e:
+        logger.exception("Error performing vector search")
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == '__main__':
